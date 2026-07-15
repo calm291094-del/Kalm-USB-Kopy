@@ -1,0 +1,1 @@
+pyinstaller --onefile --windowed --name "Kalm-USB-Kopy" kalm_usb_kopy.py
