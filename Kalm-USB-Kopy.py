@@ -1,7 +1,7 @@
 """
 Kalm-USB-Kopy - Gestor de Memorias USB
-Versión: 3.1.1
-Descripción: Sistema avanzado de gestión de memorias USB con notificaciones Windows
+Versión: 3.2.1
+Descripción: Sistema avanzado de gestión de memorias USB con bandeja profesional
 Creador: Carlos A. Lorenzo Marro
 Email: klorenzo29@nauta.cu
 """
@@ -28,6 +28,7 @@ from collections import Counter
 import ctypes
 from ctypes import wintypes
 import base64
+import tempfile
 
 # Intentar importar ttkbootstrap
 try:
@@ -47,6 +48,15 @@ try:
 except ImportError:
     NOTIFICATION_AVAILABLE = False
     print("plyer no instalado. Instalar: pip install plyer")
+
+# Intentar importar pystray para la bandeja
+try:
+    import pystray
+    from PIL import Image, ImageDraw, ImageFont
+    PYSTRAY_AVAILABLE = True
+except ImportError:
+    PYSTRAY_AVAILABLE = False
+    print("pystray no instalado. Instalar: pip install pystray pillow")
 
 # ==================== TEMAS VÁLIDOS DE TTKBOOTSTRAP ====================
 TEMAS_VALIDOS = [
@@ -69,11 +79,208 @@ TEMAS_VALIDOS = [
     'cerulean'     # Azul cielo
 ]
 
-# ==================== ICONO SVG K MODERNA ====================
-FAVICON_SVG = """<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>
-    <rect width='100' height='100' rx='20' fill='%232c3e50'/>
-    <text x='50' y='70' font-family='Arial' font-size='70' font-weight='bold' fill='white' text-anchor='middle'>K</text>
-</svg>"""
+# ==================== SISTEMA DE BANDEJA PROFESIONAL ====================
+
+class SystemTrayManager:
+    """Sistema de bandeja profesional estilo antivirus"""
+    
+    def __init__(self, app, root):
+        self.app = app
+        self.root = root
+        self.tray_icon = None
+        self.tray_thread = None
+        self.tray_running = False
+        self.icon_path = None
+        
+        # Crear icono para la bandeja
+        self.crear_icono_bandeja()
+        
+    def crear_icono_bandeja(self):
+        """Crea el icono para la bandeja del sistema usando kalm_icon.png"""
+        if not PYSTRAY_AVAILABLE:
+            print("⚠️ pystray no disponible. La bandeja no funcionará.")
+            return False
+        
+        try:
+            # Buscar kalm_icon.png en diferentes ubicaciones
+            icon_paths = [
+                "kalm_icon.png",  # Misma carpeta
+                os.path.join(os.path.dirname(sys.argv[0]), "kalm_icon.png"),  # Carpeta del ejecutable
+                os.path.join(os.getcwd(), "kalm_icon.png"),  # Carpeta actual
+            ]
+            
+            icon_loaded = False
+            image = None
+            
+            # Intentar cargar el PNG
+            for path in icon_paths:
+                if os.path.exists(path):
+                    try:
+                        image = Image.open(path)
+                        # Redimensionar para la bandeja (64x64)
+                        image = image.resize((64, 64), Image.Resampling.LANCZOS)
+                        icon_loaded = True
+                        print(f"✅ Icono cargado desde: {path}")
+                        break
+                    except Exception as e:
+                        print(f"Error al cargar {path}: {e}")
+            
+            # Si no se encontró el PNG, crear uno por defecto
+            if not icon_loaded:
+                print("⚠️ kalm_icon.png no encontrado. Creando icono por defecto...")
+                width = 64
+                height = 64
+                image = Image.new('RGB', (width, height), (44, 62, 80))
+                draw = ImageDraw.Draw(image)
+                
+                # Dibujar fondo redondeado
+                draw.rounded_rectangle([0, 0, width, height], radius=12, fill=(44, 62, 80))
+                
+                # Dibujar la letra K
+                try:
+                    font = ImageFont.truetype("arial.ttf", 48)
+                except:
+                    try:
+                        font = ImageFont.truetype("segoeui.ttf", 48)
+                    except:
+                        font = ImageFont.load_default()
+                
+                bbox = draw.textbbox((0, 0), "K", font=font)
+                text_width = bbox[2] - bbox[0]
+                text_height = bbox[3] - bbox[1]
+                x = (width - text_width) // 2
+                y = (height - text_height) // 2 - 5
+                
+                draw.text((x, y), "K", fill=(255, 255, 255), font=font)
+            
+            # Guardar icono temporal para la bandeja
+            if image:
+                temp_dir = tempfile.gettempdir()
+                self.icon_path = os.path.join(temp_dir, "kalm_tray_icon.png")
+                image.save(self.icon_path, format='PNG')
+                return True
+            
+            return False
+        except Exception as e:
+            print(f"Error al crear icono de bandeja: {e}")
+            return False
+    
+    def iniciar_bandeja(self):
+        """Inicia el icono en la bandeja del sistema"""
+        if not PYSTRAY_AVAILABLE:
+            return False
+        
+        if self.tray_running:
+            return True
+        
+        try:
+            # Crear menú contextual
+            menu = pystray.Menu(
+                pystray.MenuItem("🔄 Mostrar Kalm-USB-Kopy", self.mostrar_ventana),
+                pystray.MenuItem("📊 Generar Informe", lambda: self.app.generar_informe()),
+                pystray.MenuItem("💰 Configurar Precio", lambda: self.app.abrir_config_precio()),
+                pystray.MenuItem("❌ Salir", self.salir_aplicacion)
+            )
+            
+            # Crear icono
+            icon_image = None
+            if self.icon_path and os.path.exists(self.icon_path):
+                icon_image = Image.open(self.icon_path)
+            else:
+                # Crear icono por defecto
+                width = 64
+                height = 64
+                icon_image = Image.new('RGB', (width, height), (44, 62, 80))
+                draw = ImageDraw.Draw(icon_image)
+                draw.rounded_rectangle([0, 0, width, height], radius=12, fill=(44, 62, 80))
+                try:
+                    font = ImageFont.truetype("arial.ttf", 48)
+                except:
+                    font = ImageFont.load_default()
+                draw.text((16, 8), "K", fill=(255, 255, 255), font=font)
+            
+            self.tray_icon = pystray.Icon(
+                "KalmUSBKopy",
+                icon_image,
+                "Kalm-USB-Kopy",
+                menu
+            )
+            
+            # Iniciar en un hilo separado
+            self.tray_running = True
+            self.tray_thread = threading.Thread(target=self._ejecutar_bandeja, daemon=True)
+            self.tray_thread.start()
+            
+            return True
+        except Exception as e:
+            print(f"Error al iniciar bandeja: {e}")
+            return False
+    
+    def _ejecutar_bandeja(self):
+        """Ejecuta el icono en la bandeja"""
+        try:
+            self.tray_icon.run()
+        except Exception as e:
+            print(f"Error en la bandeja: {e}")
+        finally:
+            self.tray_running = False
+    
+    def mostrar_ventana(self, icon=None, item=None):
+        """Muestra la ventana principal desde la bandeja"""
+        try:
+            self.root.deiconify()
+            self.root.lift()
+            self.root.focus_force()
+            self.root.attributes('-topmost', True)
+            self.root.attributes('-topmost', False)
+        except Exception as e:
+            print(f"Error al mostrar ventana: {e}")
+    
+    def ocultar_ventana(self):
+        """Oculta la ventana principal a la bandeja"""
+        try:
+            self.root.withdraw()
+            # Notificar al usuario
+            if NOTIFICATION_AVAILABLE:
+                try:
+                    notification.notify(
+                        title="Kalm-USB-Kopy",
+                        message="La aplicación está en la bandeja del sistema.\nHaz clic en el icono para mostrar.",
+                        app_name="Kalm-USB-Kopy",
+                        timeout=5
+                    )
+                except:
+                    pass
+        except Exception as e:
+            print(f"Error al ocultar ventana: {e}")
+    
+    def salir_aplicacion(self, icon=None, item=None):
+        """Cierra completamente la aplicación"""
+        try:
+            # Detener bandeja
+            self.tray_running = False
+            if self.tray_icon:
+                self.tray_icon.stop()
+            
+            # Cerrar aplicación
+            if hasattr(self.app, 'monitor') and self.app.monitor:
+                self.app.monitor.detener()
+            
+            self.root.quit()
+            self.root.destroy()
+            sys.exit(0)
+        except Exception as e:
+            print(f"Error al salir: {e}")
+            sys.exit(0)
+    
+    def detener(self):
+        """Detiene la bandeja"""
+        self.tray_running = False
+        if self.tray_icon:
+            try:
+                self.tray_icon.stop()
+            except:
+                pass
 
 # ==================== SISTEMA DE NOTIFICACIONES WINDOWS ====================
 
@@ -217,7 +424,7 @@ class WindowsNotifier:
 
 # ==================== CONFIGURACIÓN ====================
 APP_NAME = "Kalm-USB-Kopy"
-APP_VERSION = "3.1.1"
+APP_VERSION = "3.2.1"
 CREATOR = "Carlos A. Lorenzo Marro"
 EMAIL = "klorenzo29@nauta.cu"
 CONFIG_FILE = "config_kalm.json"
@@ -241,7 +448,7 @@ DEFAULT_CONFIG = {
     "notificaciones_duracion": 0  # 0 = no se cierra sola
 }
 
-# ==================== CLASES BASE ====================
+# ==================== CLASES BASE (Mantener igual) ====================
 
 class ConfigManager:
     def __init__(self):
@@ -669,8 +876,8 @@ class KalmUSBKopy:
         self.root.geometry("1200x800")
         self.root.minsize(1000, 700)
         
-        # Aplicar icono con la K moderna
-        self.aplicar_icono_k()
+        # Aplicar icono desde kalm_icon.png
+        self.aplicar_icono_png()
         
         # Aplicar tema
         self.aplicar_tema()
@@ -685,16 +892,69 @@ class KalmUSBKopy:
             self.agregar_inicio_windows()
         
         # Configurar minimización a bandeja
+        self.tray_manager = SystemTrayManager(self, self.root)
         self.root.protocol('WM_DELETE_WINDOW', self.on_close)
+        
+        # Si la bandeja está activada, iniciar
+        if self.config_manager.obtener("minimizar_bandeja", True) and PYSTRAY_AVAILABLE:
+            self.tray_manager.iniciar_bandeja()
         
         # Análisis inicial
         self.actualizar_estadisticas()
     
-    def aplicar_icono_k(self):
-        """Aplica el icono con la letra K moderna"""
+    def aplicar_icono_png(self):
+        """Aplica el icono desde kalm_icon.png a la ventana"""
         try:
-            # Crear un icono temporal desde SVG
-            import tempfile
+            from PIL import Image
+            
+            # Buscar kalm_icon.png en diferentes ubicaciones
+            icon_paths = [
+                "kalm_icon.png",  # Misma carpeta
+                os.path.join(os.path.dirname(sys.argv[0]), "kalm_icon.png"),  # Carpeta del ejecutable
+                os.path.join(os.getcwd(), "kalm_icon.png"),  # Carpeta actual
+            ]
+            
+            icon_encontrado = False
+            
+            for path in icon_paths:
+                if os.path.exists(path):
+                    try:
+                        # Cargar la imagen
+                        img = Image.open(path)
+                        
+                        # Crear archivo .ico temporal
+                        temp_dir = tempfile.gettempdir()
+                        ico_path = os.path.join(temp_dir, "kalm_app_icon.ico")
+                        
+                        # Guardar como .ico (necesita tamaño 32x32 para la ventana)
+                        img_resized = img.resize((32, 32), Image.Resampling.LANCZOS)
+                        img_resized.save(ico_path, format='ICO', sizes=[(32, 32), (64, 64), (128, 128)])
+                        
+                        # Aplicar icono a la ventana
+                        self.root.iconbitmap(default=ico_path)
+                        
+                        # Guardar ruta para uso futuro
+                        self.icono_png_path = path
+                        self.icono_ico_path = ico_path
+                        
+                        icon_encontrado = True
+                        print(f"✅ Icono cargado desde: {path}")
+                        break
+                    except Exception as e:
+                        print(f"Error al procesar {path}: {e}")
+            
+            # Si no se encontró el PNG, crear icono por defecto
+            if not icon_encontrado:
+                print("⚠️ kalm_icon.png no encontrado. Creando icono por defecto...")
+                self._crear_icono_defecto()
+                
+        except Exception as e:
+            print(f"Error al aplicar icono: {e}")
+            self._crear_icono_defecto()
+    
+    def _crear_icono_defecto(self):
+        """Crea un icono por defecto con la letra K"""
+        try:
             from PIL import Image, ImageDraw, ImageFont
             
             # Crear imagen con la K
@@ -710,18 +970,16 @@ class KalmUSBKopy:
             draw.text((16, 8), "K", fill=(255, 255, 255), font=font)
             
             # Guardar como .ico
-            ico_path = os.path.join(tempfile.gettempdir(), "kalm_icon.ico")
+            temp_dir = tempfile.gettempdir()
+            ico_path = os.path.join(temp_dir, "kalm_app_icon.ico")
             img.save(ico_path, format='ICO', sizes=[(64, 64)])
             
             # Aplicar icono
             self.root.iconbitmap(default=ico_path)
-            
-            # Guardar para uso futuro
-            self.icon_path = ico_path
+            self.icono_ico_path = ico_path
             
         except Exception as e:
-            print(f"Error al aplicar icono: {e}")
-            # Intentar con método alternativo
+            print(f"Error al crear icono por defecto: {e}")
             try:
                 self.root.iconbitmap(default='kalm.ico')
             except:
@@ -770,458 +1028,60 @@ class KalmUSBKopy:
         return False
     
     def on_close(self):
-        """Maneja el cierre de la ventana"""
-        if self.config_manager.obtener("minimizar_bandeja", True):
+        """Maneja el cierre de la ventana - minimiza a bandeja"""
+        if self.config_manager.obtener("minimizar_bandeja", True) and PYSTRAY_AVAILABLE:
+            # Ocultar ventana
             self.root.withdraw()
+            self.en_bandeja = True
+            
             # Mostrar notificación
-            self.notifier.mostrar_notificacion(
-                "Kalm-USB-Kopy",
-                "La aplicación sigue ejecutándose en segundo plano.\nHaz clic en el icono de la bandeja para mostrar."
-            )
+            if NOTIFICATION_AVAILABLE:
+                try:
+                    notification.notify(
+                        title="Kalm-USB-Kopy",
+                        message="La aplicación está en la bandeja del sistema.\nHaz clic en el icono para mostrar.",
+                        app_name="Kalm-USB-Kopy",
+                        timeout=5
+                    )
+                except:
+                    pass
+            
+            # Asegurar que la bandeja está activa
+            if not self.tray_manager.tray_running and PYSTRAY_AVAILABLE:
+                self.tray_manager.iniciar_bandeja()
         else:
+            # Cerrar completamente
+            self.salir_completo()
+    
+    def salir_completo(self):
+        """Cierra completamente la aplicación"""
+        try:
+            # Detener bandeja
+            if hasattr(self, 'tray_manager'):
+                self.tray_manager.detener()
+            
+            # Detener monitor
             if hasattr(self, 'monitor') and self.monitor:
                 self.monitor.detener()
+            
+            self.root.quit()
             self.root.destroy()
+            sys.exit(0)
+        except Exception as e:
+            print(f"Error al salir: {e}")
+            sys.exit(0)
     
-    def crear_widgets(self):
-        """Crea todos los widgets de la interfaz"""
-        
-        # Barra de menú
-        self.crear_menu()
-        
-        # Panel principal con pestañas
-        self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(fill=BOTH, expand=True, padx=10, pady=5)
-        
-        # Pestaña Principal
-        self.pestana_principal = ttk.Frame(self.notebook)
-        self.notebook.add(self.pestana_principal, text="⚔️ Kalm-USB-Kopy")
-        self.crear_pestana_principal()
-        
-        # Pestaña Memorias
-        self.pestana_memorias = ttk.Frame(self.notebook)
-        self.notebook.add(self.pestana_memorias, text="💾 Memorias")
-        self.crear_pestana_memorias()
-        
-        # Pestaña Estadísticas
-        self.pestana_estadisticas = ttk.Frame(self.notebook)
-        self.notebook.add(self.pestana_estadisticas, text="📊 Estadísticas")
-        self.crear_pestana_estadisticas()
-        
-        # Pestaña Historial
-        self.pestana_historial = ttk.Frame(self.notebook)
-        self.notebook.add(self.pestana_historial, text="📜 Historial")
-        self.crear_pestana_historial()
-        
-        # Barra de estado
-        self.crear_barra_estado()
-        
-        # Inicializar estado
-        self.actualizar_estado()
-        self.actualizar_unidades()
-        self.actualizar_lista_memorias()
-        self.actualizar_historial()
-    
-    def crear_menu(self):
-        """Crea la barra de menú"""
-        menubar = Menu(self.root)
-        self.root.config(menu=menubar)
-        
-        # Menú Archivo
-        archivo_menu = Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="📁 Archivo", menu=archivo_menu)
-        archivo_menu.add_command(label="Generar Informe Diario", command=self.generar_informe)
-        archivo_menu.add_command(label="Ver Historial Completo", command=self.ver_historial)
-        archivo_menu.add_separator()
-        archivo_menu.add_command(label="Exportar Historial (CSV)", command=self.exportar_csv)
-        archivo_menu.add_command(label="Exportar Base de Memorias", command=self.exportar_memorias)
-        archivo_menu.add_separator()
-        archivo_menu.add_command(label="Salir", command=self.on_close)
-        
-        # Menú Configuración
-        config_menu = Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="⚙️ Configuración", menu=config_menu)
-        config_menu.add_command(label="Precio por GB", command=self.abrir_config_precio)
-        config_menu.add_command(label="Configuración General", command=self.abrir_config_general)
-        config_menu.add_separator()
-        config_menu.add_command(label="Iniciar con Windows", command=self.toggle_inicio_windows)
-        config_menu.add_command(label="Minimizar a Bandeja", command=self.toggle_bandeja)
-        config_menu.add_command(label="Cambiar Tema", command=self.cambiar_tema)
-        
-        # Menú Herramientas
-        herramientas_menu = Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="🛠️ Herramientas", menu=herramientas_menu)
-        herramientas_menu.add_command(label="Analizar Tendencias", command=self.analizar_tendencias)
-        herramientas_menu.add_command(label="Limpiar Historial Antiguo", command=self.limpiar_historial)
-        herramientas_menu.add_command(label="Respaldo de Base de Datos", command=self.respaldar_datos)
-        
-        # Menú Ayuda
-        ayuda_menu = Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="❓ Ayuda", menu=ayuda_menu)
-        ayuda_menu.add_command(label="Acerca de", command=self.mostrar_acerca)
-        ayuda_menu.add_command(label="Manual Rápido", command=self.mostrar_manual)
-        ayuda_menu.add_command(label="Estadísticas del Sistema", command=self.mostrar_estadisticas_sistema)
-    
-    def crear_pestana_principal(self):
-        """Crea la pestaña principal"""
-        parent = self.pestana_principal
-        
-        # Logo y título con la K
-        titulo_frame = ttk.Frame(parent)
-        titulo_frame.pack(fill=X, pady=10)
-        
-        # Crear un label con la K estilizada
-        titulo = ttk.Label(
-            titulo_frame,
-            text="⚔️ Kalm-USB-Kopy ⚔️",
-            font=('Segoe UI', 28, 'bold'),
-            foreground='#9b59b6' if not BOOTSTRAP_AVAILABLE else None
-        )
-        titulo.pack()
-        
-        subtitulo = ttk.Label(
-            titulo_frame,
-            text=f"Sistema de Gestión de Memorias USB | Versión {APP_VERSION}",
-            font=('Segoe UI', 10)
-        )
-        subtitulo.pack()
-        
-        creador_label = ttk.Label(
-            titulo_frame,
-            text=f"Creador: {CREATOR} | {EMAIL}",
-            font=('Segoe UI', 8),
-            foreground='#7f8c8d' if not BOOTSTRAP_AVAILABLE else None
-        )
-        creador_label.pack()
-        
-        # Panel superior: Memorias conectadas
-        frame_usb = ttk.LabelFrame(parent, text="🔮 Memorias Conectadas", padding=10)
-        frame_usb.pack(fill=X, pady=5)
-        
-        list_frame = ttk.Frame(frame_usb)
-        list_frame.pack(fill=BOTH, expand=True)
-        
-        self.lista_unidades = ttk.Treeview(
-            list_frame,
-            columns=('Letra', 'Nombre', 'Total', 'Usado', 'Libre'),
-            show='headings',
-            height=3
-        )
-        
-        self.lista_unidades.heading('Letra', text='Unidad')
-        self.lista_unidades.heading('Nombre', text='Nombre de Memoria')
-        self.lista_unidades.heading('Total', text='Total (GB)')
-        self.lista_unidades.heading('Usado', text='Usado (GB)')
-        self.lista_unidades.heading('Libre', text='Libre (GB)')
-        
-        self.lista_unidades.column('Letra', width=80)
-        self.lista_unidades.column('Nombre', width=150)
-        self.lista_unidades.column('Total', width=100)
-        self.lista_unidades.column('Usado', width=100)
-        self.lista_unidades.column('Libre', width=100)
-        
-        scroll_y = ttk.Scrollbar(list_frame, orient=VERTICAL, command=self.lista_unidades.yview)
-        self.lista_unidades.configure(yscrollcommand=scroll_y.set)
-        
-        self.lista_unidades.pack(side=LEFT, fill=BOTH, expand=True)
-        scroll_y.pack(side=RIGHT, fill=Y)
-        
-        self.lista_unidades.bind('<<TreeviewSelect>>', self.on_seleccionar_unidad)
-        
-        btn_frame = ttk.Frame(frame_usb)
-        btn_frame.pack(fill=X, pady=(10, 0))
-        
-        self.btn_analizar = ttk.Button(btn_frame, text="🔍 Analizar Memoria", command=self.analizar_memoria)
-        self.btn_analizar.pack(side=LEFT, padx=5)
-        
-        self.btn_copiar = ttk.Button(btn_frame, text="📋 Copiar Datos", command=self.iniciar_copia, state=DISABLED)
-        self.btn_copiar.pack(side=LEFT, padx=5)
-        
-        self.btn_actualizar = ttk.Button(btn_frame, text="🔄 Actualizar", command=self.actualizar_unidades)
-        self.btn_actualizar.pack(side=LEFT, padx=5)
-        
-        # Panel de control de copia
-        frame_control = ttk.LabelFrame(parent, text="⚡ Control de Copias", padding=10)
-        frame_control.pack(fill=X, pady=5)
-        
-        info_frame = ttk.Frame(frame_control)
-        info_frame.pack(fill=X, pady=5)
-        
-        col1 = ttk.Frame(info_frame)
-        col1.pack(side=LEFT, fill=X, expand=True)
-        
-        ttk.Label(col1, text="💾 Memoria:").grid(row=0, column=0, sticky='w', padx=5)
-        self.lbl_memoria = ttk.Label(col1, text="Ninguna seleccionada", font=('Segoe UI', 9, 'bold'))
-        self.lbl_memoria.grid(row=0, column=1, sticky='w', padx=5)
-        
-        ttk.Label(col1, text="📊 GB a copiar:").grid(row=1, column=0, sticky='w', padx=5)
-        self.lbl_gb_copiar = ttk.Label(col1, text="0.00 GB", font=('Segoe UI', 9, 'bold'))
-        self.lbl_gb_copiar.grid(row=1, column=1, sticky='w', padx=5)
-        
-        col2 = ttk.Frame(info_frame)
-        col2.pack(side=LEFT, fill=X, expand=True)
-        
-        ttk.Label(col2, text="💰 Precio por GB:").grid(row=0, column=0, sticky='w', padx=5)
-        self.lbl_precio_gb = ttk.Label(col2, text=f"${self.config_manager.obtener_precio():.2f}", font=('Segoe UI', 9, 'bold'))
-        self.lbl_precio_gb.grid(row=0, column=1, sticky='w', padx=5)
-        
-        ttk.Label(col2, text="💵 Total a cobrar:").grid(row=1, column=0, sticky='w', padx=5)
-        self.lbl_precio_total = ttk.Label(col2, text="$0.00", font=('Segoe UI', 11, 'bold'), foreground='#27ae60')
-        self.lbl_precio_total.grid(row=1, column=1, sticky='w', padx=5)
-        
-        progress_frame = ttk.Frame(frame_control)
-        progress_frame.pack(fill=X, pady=10)
-        
-        self.progress_bar = ttk.Progressbar(
-            progress_frame,
-            length=300,
-            mode='determinate',
-            style='success.Horizontal.TProgressbar' if BOOTSTRAP_AVAILABLE else None
-        )
-        self.progress_bar.pack(fill=X, padx=5)
-        
-        self.lbl_progreso = ttk.Label(progress_frame, text="✅ Listo para copiar")
-        self.lbl_progreso.pack(pady=5)
-        
-        action_frame = ttk.Frame(frame_control)
-        action_frame.pack(fill=X, pady=5)
-        
-        self.btn_iniciar_copia = ttk.Button(
-            action_frame,
-            text="🚀 Iniciar Copia",
-            command=self.iniciar_copia,
-            state=DISABLED,
-            style='success.TButton' if BOOTSTRAP_AVAILABLE else None
-        )
-        self.btn_iniciar_copia.pack(side=LEFT, padx=5)
-        
-        self.btn_guardar_registro = ttk.Button(
-            action_frame,
-            text="💾 Guardar Registro Manual",
-            command=self.guardar_registro_manual,
-            state=DISABLED
-        )
-        self.btn_guardar_registro.pack(side=LEFT, padx=5)
-        
-        self.btn_cancelar = ttk.Button(
-            action_frame,
-            text="⛔ Cancelar",
-            command=self.cancelar_copia,
-            state=DISABLED
-        )
-        self.btn_cancelar.pack(side=LEFT, padx=5)
-        
-        # Panel de resumen rápido
-        frame_resumen = ttk.LabelFrame(parent, text="📊 Resumen Rápido", padding=10)
-        frame_resumen.pack(fill=X, pady=5)
-        
-        resumen_frame = ttk.Frame(frame_resumen)
-        resumen_frame.pack(fill=X, pady=5)
-        
-        self.lbl_resumen_memorias = ttk.Label(resumen_frame, text="💾 Memorias activas: 0", font=('Segoe UI', 9))
-        self.lbl_resumen_memorias.pack(side=LEFT, padx=15)
-        
-        self.lbl_resumen_copias = ttk.Label(resumen_frame, text="📋 Copias hoy: 0", font=('Segoe UI', 9))
-        self.lbl_resumen_copias.pack(side=LEFT, padx=15)
-        
-        self.lbl_resumen_ingresos = ttk.Label(resumen_frame, text="💰 Ingresos hoy: $0.00", font=('Segoe UI', 9, 'bold'), foreground='#27ae60')
-        self.lbl_resumen_ingresos.pack(side=LEFT, padx=15)
-    
-    def crear_pestana_memorias(self):
-        """Crea la pestaña de gestión de memorias"""
-        parent = self.pestana_memorias
-        
-        frame_lista = ttk.LabelFrame(parent, text="💾 Base de Memorias", padding=10)
-        frame_lista.pack(fill=BOTH, expand=True, pady=5)
-        
-        self.tree_memorias = ttk.Treeview(
-            frame_lista,
-            columns=('Nombre', 'Serial', 'Veces', 'Total_GB', 'Ingresos', 'Ultima'),
-            show='headings',
-            height=10
-        )
-        
-        self.tree_memorias.heading('Nombre', text='Nombre')
-        self.tree_memorias.heading('Serial', text='Serial ID')
-        self.tree_memorias.heading('Veces', text='Veces Usada')
-        self.tree_memorias.heading('Total_GB', text='Total GB')
-        self.tree_memorias.heading('Ingresos', text='Ingresos')
-        self.tree_memorias.heading('Ultima', text='Última Conexión')
-        
-        self.tree_memorias.column('Nombre', width=150)
-        self.tree_memorias.column('Serial', width=100)
-        self.tree_memorias.column('Veces', width=80)
-        self.tree_memorias.column('Total_GB', width=80)
-        self.tree_memorias.column('Ingresos', width=80)
-        self.tree_memorias.column('Ultima', width=120)
-        
-        scroll_y = ttk.Scrollbar(frame_lista, orient=VERTICAL, command=self.tree_memorias.yview)
-        self.tree_memorias.configure(yscrollcommand=scroll_y.set)
-        
-        self.tree_memorias.pack(side=LEFT, fill=BOTH, expand=True)
-        scroll_y.pack(side=RIGHT, fill=Y)
-        
-        self.tree_memorias.bind('<<TreeviewSelect>>', self.on_seleccionar_memoria_db)
-        
-        action_frame = ttk.Frame(frame_lista)
-        action_frame.pack(fill=X, pady=5)
-        
-        ttk.Button(action_frame, text="🔄 Actualizar Lista", command=self.actualizar_lista_memorias).pack(side=LEFT, padx=5)
-        ttk.Button(action_frame, text="✏️ Editar Nombre", command=self.editar_nombre_memoria).pack(side=LEFT, padx=5)
-        ttk.Button(action_frame, text="📊 Ver Historial", command=self.ver_historial_memoria).pack(side=LEFT, padx=5)
-        ttk.Button(action_frame, text="🗑️ Eliminar", command=self.eliminar_memoria).pack(side=LEFT, padx=5)
-        
-        frame_detalles = ttk.LabelFrame(parent, text="📋 Detalles de Memoria", padding=10)
-        frame_detalles.pack(fill=X, pady=5)
-        
-        self.txt_detalles_memoria = scrolledtext.ScrolledText(
-            frame_detalles,
-            height=5,
-            wrap=WORD,
-            font=('Consolas', 9),
-            bg='#2b2b2b' if BOOTSTRAP_AVAILABLE else 'white',
-            fg='white' if BOOTSTRAP_AVAILABLE else 'black'
-        )
-        self.txt_detalles_memoria.pack(fill=BOTH, expand=True)
-        self.txt_detalles_memoria.config(state=DISABLED)
-    
-    def crear_pestana_estadisticas(self):
-        """Crea la pestaña de estadísticas"""
-        parent = self.pestana_estadisticas
-        
-        frame_general = ttk.LabelFrame(parent, text="📊 Estadísticas Generales", padding=10)
-        frame_general.pack(fill=BOTH, expand=True, pady=5)
-        
-        stats_grid = ttk.Frame(frame_general)
-        stats_grid.pack(fill=X, pady=10)
-        
-        row1 = ttk.Frame(stats_grid)
-        row1.pack(fill=X, pady=5)
-        
-        self.lbl_stats_total_copias = ttk.Label(row1, text="📋 Total Copias: 0", font=('Segoe UI', 10))
-        self.lbl_stats_total_copias.pack(side=LEFT, padx=20)
-        
-        self.lbl_stats_total_gb = ttk.Label(row1, text="💾 Total GB: 0.00", font=('Segoe UI', 10))
-        self.lbl_stats_total_gb.pack(side=LEFT, padx=20)
-        
-        self.lbl_stats_total_ingresos = ttk.Label(row1, text="💰 Total Ingresos: $0.00", font=('Segoe UI', 10, 'bold'), foreground='#27ae60')
-        self.lbl_stats_total_ingresos.pack(side=LEFT, padx=20)
-        
-        row2 = ttk.Frame(stats_grid)
-        row2.pack(fill=X, pady=5)
-        
-        self.lbl_stats_memorias_activas = ttk.Label(row2, text="💾 Memorias Activas: 0", font=('Segoe UI', 10))
-        self.lbl_stats_memorias_activas.pack(side=LEFT, padx=20)
-        
-        self.lbl_stats_memoria_top = ttk.Label(row2, text="🏆 Memoria más usada: Ninguna", font=('Segoe UI', 10))
-        self.lbl_stats_memoria_top.pack(side=LEFT, padx=20)
-        
-        self.lbl_stats_promedio = ttk.Label(row2, text="📈 Promedio diario: 0.00", font=('Segoe UI', 10))
-        self.lbl_stats_promedio.pack(side=LEFT, padx=20)
-        
-        row3 = ttk.Frame(stats_grid)
-        row3.pack(fill=X, pady=5)
-        
-        self.lbl_stats_ultimos_7 = ttk.Label(row3, text="📆 Últimos 7 días: 0 copias", font=('Segoe UI', 10))
-        self.lbl_stats_ultimos_7.pack(side=LEFT, padx=20)
-        
-        self.lbl_stats_ultimos_30 = ttk.Label(row3, text="📆 Últimos 30 días: 0 copias", font=('Segoe UI', 10))
-        self.lbl_stats_ultimos_30.pack(side=LEFT, padx=20)
-        
-        ttk.Button(frame_general, text="🔄 Actualizar Estadísticas", command=self.actualizar_estadisticas).pack(pady=10)
-        
-        frame_tendencias = ttk.LabelFrame(parent, text="📈 Tendencias Detectadas", padding=10)
-        frame_tendencias.pack(fill=BOTH, expand=True, pady=5)
-        
-        self.txt_tendencias = scrolledtext.ScrolledText(
-            frame_tendencias,
-            height=8,
-            wrap=WORD,
-            font=('Consolas', 9),
-            bg='#2b2b2b' if BOOTSTRAP_AVAILABLE else 'white',
-            fg='white' if BOOTSTRAP_AVAILABLE else 'black'
-        )
-        self.txt_tendencias.pack(fill=BOTH, expand=True)
-        self.txt_tendencias.config(state=DISABLED)
-        
-        self.actualizar_tendencias()
-    
-    def crear_pestana_historial(self):
-        """Crea la pestaña de historial"""
-        parent = self.pestana_historial
-        
-        frame_filtros = ttk.Frame(parent)
-        frame_filtros.pack(fill=X, pady=5)
-        
-        ttk.Label(frame_filtros, text="Filtrar por fecha:").pack(side=LEFT, padx=5)
-        
-        ttk.Label(frame_filtros, text="Desde:").pack(side=LEFT, padx=5)
-        self.filtro_fecha_ini = ttk.Entry(frame_filtros, width=15)
-        self.filtro_fecha_ini.pack(side=LEFT, padx=5)
-        self.filtro_fecha_ini.insert(0, datetime.datetime.now().strftime("%Y-%m-%d"))
-        
-        ttk.Label(frame_filtros, text="Hasta:").pack(side=LEFT, padx=5)
-        self.filtro_fecha_fin = ttk.Entry(frame_filtros, width=15)
-        self.filtro_fecha_fin.pack(side=LEFT, padx=5)
-        self.filtro_fecha_fin.insert(0, datetime.datetime.now().strftime("%Y-%m-%d"))
-        
-        ttk.Button(frame_filtros, text="🔍 Filtrar", command=self.filtrar_historial).pack(side=LEFT, padx=5)
-        ttk.Button(frame_filtros, text="📄 Exportar", command=self.exportar_historial_filtrado).pack(side=LEFT, padx=5)
-        
-        frame_historial = ttk.LabelFrame(parent, text="📜 Historial de Copias", padding=10)
-        frame_historial.pack(fill=BOTH, expand=True, pady=5)
-        
-        self.historial_tree = ttk.Treeview(
-            frame_historial,
-            columns=('Fecha', 'Hora', 'Memoria', 'Unidad', 'GB', 'Precio', 'Estado'),
-            show='headings',
-            height=15
-        )
-        
-        self.historial_tree.heading('Fecha', text='Fecha')
-        self.historial_tree.heading('Hora', text='Hora')
-        self.historial_tree.heading('Memoria', text='Memoria')
-        self.historial_tree.heading('Unidad', text='Unidad')
-        self.historial_tree.heading('GB', text='GB')
-        self.historial_tree.heading('Precio', text='Precio')
-        self.historial_tree.heading('Estado', text='Estado')
-        
-        self.historial_tree.column('Fecha', width=100)
-        self.historial_tree.column('Hora', width=80)
-        self.historial_tree.column('Memoria', width=150)
-        self.historial_tree.column('Unidad', width=80)
-        self.historial_tree.column('GB', width=80)
-        self.historial_tree.column('Precio', width=80)
-        self.historial_tree.column('Estado', width=100)
-        
-        scroll_y = ttk.Scrollbar(frame_historial, orient=VERTICAL, command=self.historial_tree.yview)
-        self.historial_tree.configure(yscrollcommand=scroll_y.set)
-        
-        self.historial_tree.pack(side=LEFT, fill=BOTH, expand=True)
-        scroll_y.pack(side=RIGHT, fill=Y)
-    
-    def crear_barra_estado(self):
-        """Crea la barra de estado"""
-        self.status_frame = ttk.Frame(self.root)
-        self.status_frame.pack(side=BOTTOM, fill=X, padx=10, pady=5)
-        
-        self.status_label = ttk.Label(self.status_frame, text="🟢 Sistema listo")
-        self.status_label.pack(side=LEFT)
-        
-        # Información del creador en la barra de estado
-        creador_status = ttk.Label(
-            self.status_frame,
-            text=f"👤 {CREATOR}",
-            font=('Segoe UI', 8),
-            foreground='#7f8c8d' if not BOOTSTRAP_AVAILABLE else None
-        )
-        creador_status.pack(side=LEFT, padx=20)
-        
-        self.precio_label = ttk.Label(
-            self.status_frame,
-            text=f"💰 Precio: ${self.config_manager.obtener_precio():.2f}/GB"
-        )
-        self.precio_label.pack(side=RIGHT)
+    def mostrar_ventana(self):
+        """Muestra la ventana desde la bandeja"""
+        try:
+            self.root.deiconify()
+            self.root.lift()
+            self.root.focus_force()
+            self.root.attributes('-topmost', True)
+            self.root.attributes('-topmost', False)
+            self.en_bandeja = False
+        except Exception as e:
+            print(f"Error al mostrar ventana: {e}")
     
     # ==================== MÉTODOS DE NOTIFICACIÓN ====================
     
@@ -2310,7 +2170,17 @@ class KalmUSBKopy:
         nuevo = not actual
         self.config_manager.establecer("minimizar_bandeja", nuevo)
         
-        estado = "activada" if nuevo else "desactivada"
+        if nuevo:
+            if PYSTRAY_AVAILABLE:
+                self.tray_manager.iniciar_bandeja()
+                estado = "activada"
+            else:
+                messagebox.showwarning("Advertencia", "pystray no está instalado. Instala: pip install pystray pillow")
+                estado = "no disponible"
+        else:
+            self.tray_manager.detener()
+            estado = "desactivada"
+        
         messagebox.showinfo("Información", f"Minimización a bandeja {estado}")
     
     def agregar_inicio_windows(self):
@@ -2597,14 +2467,14 @@ class KalmUSBKopy:
         ✓ Monitoreo automático de USB
         ✓ Identificación inteligente de memorias
         ✓ Notificaciones emergentes Windows
+        ✓ Bandeja del sistema (como antivirus)
+        ✓ Icono personalizado (kalm_icon.png)
         ✓ Cálculo automático de precios
         ✓ Historial completo por memoria
         ✓ Análisis de tendencias
         ✓ Informes diarios detallados
         ✓ Inicio con Windows
-        ✓ Minimización a bandeja
         ✓ Temas en tiempo real
-        ✓ Icono personalizado con letra K
         
         💰 Configuración por defecto:
         - 1 GB = $5.00 CUP
@@ -2671,6 +2541,11 @@ class KalmUSBKopy:
            ✓ Respaldo de Datos: Crea copia de seguridad
            ✓ Exportar Base de Memorias: Guarda la información
         
+        8. BANDEJA DEL SISTEMA
+           ✓ Minimiza a la bandeja como un antivirus
+           ✓ Icono personalizado desde kalm_icon.png
+           ✓ Menú contextual con opciones rápidas
+        
         ⚡ ¡Sistema completamente automático e inteligente!
         
         📧 Para soporte: {EMAIL}
@@ -2712,9 +2587,453 @@ class KalmUSBKopy:
    - Creador: {CREATOR}
    - Email: {EMAIL}
    - Versión: {APP_VERSION}
+   - Estado: {'Minimizado a bandeja' if self.en_bandeja else 'Ventana visible'}
+   - Icono: {'kalm_icon.png' if hasattr(self, 'icono_png_path') and self.icono_png_path else 'Por defecto'}
         """
         
         messagebox.showinfo("Estadísticas del Sistema", mensaje)
+
+    # ==================== MÉTODOS DE UI ADICIONALES ====================
+    
+    def crear_widgets(self):
+        """Crea todos los widgets de la interfaz"""
+        
+        # Barra de menú
+        self.crear_menu()
+        
+        # Panel principal con pestañas
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill=BOTH, expand=True, padx=10, pady=5)
+        
+        # Pestaña Principal
+        self.pestana_principal = ttk.Frame(self.notebook)
+        self.notebook.add(self.pestana_principal, text="⚔️ Kalm-USB-Kopy")
+        self.crear_pestana_principal()
+        
+        # Pestaña Memorias
+        self.pestana_memorias = ttk.Frame(self.notebook)
+        self.notebook.add(self.pestana_memorias, text="💾 Memorias")
+        self.crear_pestana_memorias()
+        
+        # Pestaña Estadísticas
+        self.pestana_estadisticas = ttk.Frame(self.notebook)
+        self.notebook.add(self.pestana_estadisticas, text="📊 Estadísticas")
+        self.crear_pestana_estadisticas()
+        
+        # Pestaña Historial
+        self.pestana_historial = ttk.Frame(self.notebook)
+        self.notebook.add(self.pestana_historial, text="📜 Historial")
+        self.crear_pestana_historial()
+        
+        # Barra de estado
+        self.crear_barra_estado()
+        
+        # Inicializar estado
+        self.actualizar_estado()
+        self.actualizar_unidades()
+        self.actualizar_lista_memorias()
+        self.actualizar_historial()
+    
+    def crear_menu(self):
+        """Crea la barra de menú"""
+        menubar = Menu(self.root)
+        self.root.config(menu=menubar)
+        
+        # Menú Archivo
+        archivo_menu = Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="📁 Archivo", menu=archivo_menu)
+        archivo_menu.add_command(label="Generar Informe Diario", command=self.generar_informe)
+        archivo_menu.add_command(label="Ver Historial Completo", command=self.ver_historial)
+        archivo_menu.add_separator()
+        archivo_menu.add_command(label="Exportar Historial (CSV)", command=self.exportar_csv)
+        archivo_menu.add_command(label="Exportar Base de Memorias", command=self.exportar_memorias)
+        archivo_menu.add_separator()
+        archivo_menu.add_command(label="Salir", command=self.salir_completo)
+        
+        # Menú Configuración
+        config_menu = Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="⚙️ Configuración", menu=config_menu)
+        config_menu.add_command(label="Precio por GB", command=self.abrir_config_precio)
+        config_menu.add_command(label="Configuración General", command=self.abrir_config_general)
+        config_menu.add_separator()
+        config_menu.add_command(label="Iniciar con Windows", command=self.toggle_inicio_windows)
+        config_menu.add_command(label="Minimizar a Bandeja", command=self.toggle_bandeja)
+        config_menu.add_command(label="Cambiar Tema", command=self.cambiar_tema)
+        
+        # Menú Herramientas
+        herramientas_menu = Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="🛠️ Herramientas", menu=herramientas_menu)
+        herramientas_menu.add_command(label="Analizar Tendencias", command=self.analizar_tendencias)
+        herramientas_menu.add_command(label="Limpiar Historial Antiguo", command=self.limpiar_historial)
+        herramientas_menu.add_command(label="Respaldo de Base de Datos", command=self.respaldar_datos)
+        
+        # Menú Ayuda
+        ayuda_menu = Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="❓ Ayuda", menu=ayuda_menu)
+        ayuda_menu.add_command(label="Acerca de", command=self.mostrar_acerca)
+        ayuda_menu.add_command(label="Manual Rápido", command=self.mostrar_manual)
+        ayuda_menu.add_command(label="Estadísticas del Sistema", command=self.mostrar_estadisticas_sistema)
+    
+    def crear_pestana_principal(self):
+        """Crea la pestaña principal"""
+        parent = self.pestana_principal
+        
+        # Logo y título con la K
+        titulo_frame = ttk.Frame(parent)
+        titulo_frame.pack(fill=X, pady=10)
+        
+        # Crear un label con la K estilizada
+        titulo = ttk.Label(
+            titulo_frame,
+            text="⚔️ Kalm-USB-Kopy ⚔️",
+            font=('Segoe UI', 28, 'bold'),
+            foreground='#9b59b6' if not BOOTSTRAP_AVAILABLE else None
+        )
+        titulo.pack()
+        
+        subtitulo = ttk.Label(
+            titulo_frame,
+            text=f"Sistema de Gestión de Memorias USB | Versión {APP_VERSION}",
+            font=('Segoe UI', 10)
+        )
+        subtitulo.pack()
+        
+        creador_label = ttk.Label(
+            titulo_frame,
+            text=f"Creador: {CREATOR} | {EMAIL}",
+            font=('Segoe UI', 8),
+            foreground='#7f8c8d' if not BOOTSTRAP_AVAILABLE else None
+        )
+        creador_label.pack()
+        
+        # Panel superior: Memorias conectadas
+        frame_usb = ttk.LabelFrame(parent, text="🔮 Memorias Conectadas", padding=10)
+        frame_usb.pack(fill=X, pady=5)
+        
+        list_frame = ttk.Frame(frame_usb)
+        list_frame.pack(fill=BOTH, expand=True)
+        
+        self.lista_unidades = ttk.Treeview(
+            list_frame,
+            columns=('Letra', 'Nombre', 'Total', 'Usado', 'Libre'),
+            show='headings',
+            height=3
+        )
+        
+        self.lista_unidades.heading('Letra', text='Unidad')
+        self.lista_unidades.heading('Nombre', text='Nombre de Memoria')
+        self.lista_unidades.heading('Total', text='Total (GB)')
+        self.lista_unidades.heading('Usado', text='Usado (GB)')
+        self.lista_unidades.heading('Libre', text='Libre (GB)')
+        
+        self.lista_unidades.column('Letra', width=80)
+        self.lista_unidades.column('Nombre', width=150)
+        self.lista_unidades.column('Total', width=100)
+        self.lista_unidades.column('Usado', width=100)
+        self.lista_unidades.column('Libre', width=100)
+        
+        scroll_y = ttk.Scrollbar(list_frame, orient=VERTICAL, command=self.lista_unidades.yview)
+        self.lista_unidades.configure(yscrollcommand=scroll_y.set)
+        
+        self.lista_unidades.pack(side=LEFT, fill=BOTH, expand=True)
+        scroll_y.pack(side=RIGHT, fill=Y)
+        
+        self.lista_unidades.bind('<<TreeviewSelect>>', self.on_seleccionar_unidad)
+        
+        btn_frame = ttk.Frame(frame_usb)
+        btn_frame.pack(fill=X, pady=(10, 0))
+        
+        self.btn_analizar = ttk.Button(btn_frame, text="🔍 Analizar Memoria", command=self.analizar_memoria)
+        self.btn_analizar.pack(side=LEFT, padx=5)
+        
+        self.btn_copiar = ttk.Button(btn_frame, text="📋 Copiar Datos", command=self.iniciar_copia, state=DISABLED)
+        self.btn_copiar.pack(side=LEFT, padx=5)
+        
+        self.btn_actualizar = ttk.Button(btn_frame, text="🔄 Actualizar", command=self.actualizar_unidades)
+        self.btn_actualizar.pack(side=LEFT, padx=5)
+        
+        # Panel de control de copia
+        frame_control = ttk.LabelFrame(parent, text="⚡ Control de Copias", padding=10)
+        frame_control.pack(fill=X, pady=5)
+        
+        info_frame = ttk.Frame(frame_control)
+        info_frame.pack(fill=X, pady=5)
+        
+        col1 = ttk.Frame(info_frame)
+        col1.pack(side=LEFT, fill=X, expand=True)
+        
+        ttk.Label(col1, text="💾 Memoria:").grid(row=0, column=0, sticky='w', padx=5)
+        self.lbl_memoria = ttk.Label(col1, text="Ninguna seleccionada", font=('Segoe UI', 9, 'bold'))
+        self.lbl_memoria.grid(row=0, column=1, sticky='w', padx=5)
+        
+        ttk.Label(col1, text="📊 GB a copiar:").grid(row=1, column=0, sticky='w', padx=5)
+        self.lbl_gb_copiar = ttk.Label(col1, text="0.00 GB", font=('Segoe UI', 9, 'bold'))
+        self.lbl_gb_copiar.grid(row=1, column=1, sticky='w', padx=5)
+        
+        col2 = ttk.Frame(info_frame)
+        col2.pack(side=LEFT, fill=X, expand=True)
+        
+        ttk.Label(col2, text="💰 Precio por GB:").grid(row=0, column=0, sticky='w', padx=5)
+        self.lbl_precio_gb = ttk.Label(col2, text=f"${self.config_manager.obtener_precio():.2f}", font=('Segoe UI', 9, 'bold'))
+        self.lbl_precio_gb.grid(row=0, column=1, sticky='w', padx=5)
+        
+        ttk.Label(col2, text="💵 Total a cobrar:").grid(row=1, column=0, sticky='w', padx=5)
+        self.lbl_precio_total = ttk.Label(col2, text="$0.00", font=('Segoe UI', 11, 'bold'), foreground='#27ae60')
+        self.lbl_precio_total.grid(row=1, column=1, sticky='w', padx=5)
+        
+        progress_frame = ttk.Frame(frame_control)
+        progress_frame.pack(fill=X, pady=10)
+        
+        self.progress_bar = ttk.Progressbar(
+            progress_frame,
+            length=300,
+            mode='determinate',
+            style='success.Horizontal.TProgressbar' if BOOTSTRAP_AVAILABLE else None
+        )
+        self.progress_bar.pack(fill=X, padx=5)
+        
+        self.lbl_progreso = ttk.Label(progress_frame, text="✅ Listo para copiar")
+        self.lbl_progreso.pack(pady=5)
+        
+        action_frame = ttk.Frame(frame_control)
+        action_frame.pack(fill=X, pady=5)
+        
+        self.btn_iniciar_copia = ttk.Button(
+            action_frame,
+            text="🚀 Iniciar Copia",
+            command=self.iniciar_copia,
+            state=DISABLED,
+            style='success.TButton' if BOOTSTRAP_AVAILABLE else None
+        )
+        self.btn_iniciar_copia.pack(side=LEFT, padx=5)
+        
+        self.btn_guardar_registro = ttk.Button(
+            action_frame,
+            text="💾 Guardar Registro Manual",
+            command=self.guardar_registro_manual,
+            state=DISABLED
+        )
+        self.btn_guardar_registro.pack(side=LEFT, padx=5)
+        
+        self.btn_cancelar = ttk.Button(
+            action_frame,
+            text="⛔ Cancelar",
+            command=self.cancelar_copia,
+            state=DISABLED
+        )
+        self.btn_cancelar.pack(side=LEFT, padx=5)
+        
+        # Panel de resumen rápido
+        frame_resumen = ttk.LabelFrame(parent, text="📊 Resumen Rápido", padding=10)
+        frame_resumen.pack(fill=X, pady=5)
+        
+        resumen_frame = ttk.Frame(frame_resumen)
+        resumen_frame.pack(fill=X, pady=5)
+        
+        self.lbl_resumen_memorias = ttk.Label(resumen_frame, text="💾 Memorias activas: 0", font=('Segoe UI', 9))
+        self.lbl_resumen_memorias.pack(side=LEFT, padx=15)
+        
+        self.lbl_resumen_copias = ttk.Label(resumen_frame, text="📋 Copias hoy: 0", font=('Segoe UI', 9))
+        self.lbl_resumen_copias.pack(side=LEFT, padx=15)
+        
+        self.lbl_resumen_ingresos = ttk.Label(resumen_frame, text="💰 Ingresos hoy: $0.00", font=('Segoe UI', 9, 'bold'), foreground='#27ae60')
+        self.lbl_resumen_ingresos.pack(side=LEFT, padx=15)
+    
+    def crear_pestana_memorias(self):
+        """Crea la pestaña de gestión de memorias"""
+        parent = self.pestana_memorias
+        
+        frame_lista = ttk.LabelFrame(parent, text="💾 Base de Memorias", padding=10)
+        frame_lista.pack(fill=BOTH, expand=True, pady=5)
+        
+        self.tree_memorias = ttk.Treeview(
+            frame_lista,
+            columns=('Nombre', 'Serial', 'Veces', 'Total_GB', 'Ingresos', 'Ultima'),
+            show='headings',
+            height=10
+        )
+        
+        self.tree_memorias.heading('Nombre', text='Nombre')
+        self.tree_memorias.heading('Serial', text='Serial ID')
+        self.tree_memorias.heading('Veces', text='Veces Usada')
+        self.tree_memorias.heading('Total_GB', text='Total GB')
+        self.tree_memorias.heading('Ingresos', text='Ingresos')
+        self.tree_memorias.heading('Ultima', text='Última Conexión')
+        
+        self.tree_memorias.column('Nombre', width=150)
+        self.tree_memorias.column('Serial', width=100)
+        self.tree_memorias.column('Veces', width=80)
+        self.tree_memorias.column('Total_GB', width=80)
+        self.tree_memorias.column('Ingresos', width=80)
+        self.tree_memorias.column('Ultima', width=120)
+        
+        scroll_y = ttk.Scrollbar(frame_lista, orient=VERTICAL, command=self.tree_memorias.yview)
+        self.tree_memorias.configure(yscrollcommand=scroll_y.set)
+        
+        self.tree_memorias.pack(side=LEFT, fill=BOTH, expand=True)
+        scroll_y.pack(side=RIGHT, fill=Y)
+        
+        self.tree_memorias.bind('<<TreeviewSelect>>', self.on_seleccionar_memoria_db)
+        
+        action_frame = ttk.Frame(frame_lista)
+        action_frame.pack(fill=X, pady=5)
+        
+        ttk.Button(action_frame, text="🔄 Actualizar Lista", command=self.actualizar_lista_memorias).pack(side=LEFT, padx=5)
+        ttk.Button(action_frame, text="✏️ Editar Nombre", command=self.editar_nombre_memoria).pack(side=LEFT, padx=5)
+        ttk.Button(action_frame, text="📊 Ver Historial", command=self.ver_historial_memoria).pack(side=LEFT, padx=5)
+        ttk.Button(action_frame, text="🗑️ Eliminar", command=self.eliminar_memoria).pack(side=LEFT, padx=5)
+        
+        frame_detalles = ttk.LabelFrame(parent, text="📋 Detalles de Memoria", padding=10)
+        frame_detalles.pack(fill=X, pady=5)
+        
+        self.txt_detalles_memoria = scrolledtext.ScrolledText(
+            frame_detalles,
+            height=5,
+            wrap=WORD,
+            font=('Consolas', 9),
+            bg='#2b2b2b' if BOOTSTRAP_AVAILABLE else 'white',
+            fg='white' if BOOTSTRAP_AVAILABLE else 'black'
+        )
+        self.txt_detalles_memoria.pack(fill=BOTH, expand=True)
+        self.txt_detalles_memoria.config(state=DISABLED)
+    
+    def crear_pestana_estadisticas(self):
+        """Crea la pestaña de estadísticas"""
+        parent = self.pestana_estadisticas
+        
+        frame_general = ttk.LabelFrame(parent, text="📊 Estadísticas Generales", padding=10)
+        frame_general.pack(fill=BOTH, expand=True, pady=5)
+        
+        stats_grid = ttk.Frame(frame_general)
+        stats_grid.pack(fill=X, pady=10)
+        
+        row1 = ttk.Frame(stats_grid)
+        row1.pack(fill=X, pady=5)
+        
+        self.lbl_stats_total_copias = ttk.Label(row1, text="📋 Total Copias: 0", font=('Segoe UI', 10))
+        self.lbl_stats_total_copias.pack(side=LEFT, padx=20)
+        
+        self.lbl_stats_total_gb = ttk.Label(row1, text="💾 Total GB: 0.00", font=('Segoe UI', 10))
+        self.lbl_stats_total_gb.pack(side=LEFT, padx=20)
+        
+        self.lbl_stats_total_ingresos = ttk.Label(row1, text="💰 Total Ingresos: $0.00", font=('Segoe UI', 10, 'bold'), foreground='#27ae60')
+        self.lbl_stats_total_ingresos.pack(side=LEFT, padx=20)
+        
+        row2 = ttk.Frame(stats_grid)
+        row2.pack(fill=X, pady=5)
+        
+        self.lbl_stats_memorias_activas = ttk.Label(row2, text="💾 Memorias Activas: 0", font=('Segoe UI', 10))
+        self.lbl_stats_memorias_activas.pack(side=LEFT, padx=20)
+        
+        self.lbl_stats_memoria_top = ttk.Label(row2, text="🏆 Memoria más usada: Ninguna", font=('Segoe UI', 10))
+        self.lbl_stats_memoria_top.pack(side=LEFT, padx=20)
+        
+        self.lbl_stats_promedio = ttk.Label(row2, text="📈 Promedio diario: 0.00", font=('Segoe UI', 10))
+        self.lbl_stats_promedio.pack(side=LEFT, padx=20)
+        
+        row3 = ttk.Frame(stats_grid)
+        row3.pack(fill=X, pady=5)
+        
+        self.lbl_stats_ultimos_7 = ttk.Label(row3, text="📆 Últimos 7 días: 0 copias", font=('Segoe UI', 10))
+        self.lbl_stats_ultimos_7.pack(side=LEFT, padx=20)
+        
+        self.lbl_stats_ultimos_30 = ttk.Label(row3, text="📆 Últimos 30 días: 0 copias", font=('Segoe UI', 10))
+        self.lbl_stats_ultimos_30.pack(side=LEFT, padx=20)
+        
+        ttk.Button(frame_general, text="🔄 Actualizar Estadísticas", command=self.actualizar_estadisticas).pack(pady=10)
+        
+        frame_tendencias = ttk.LabelFrame(parent, text="📈 Tendencias Detectadas", padding=10)
+        frame_tendencias.pack(fill=BOTH, expand=True, pady=5)
+        
+        self.txt_tendencias = scrolledtext.ScrolledText(
+            frame_tendencias,
+            height=8,
+            wrap=WORD,
+            font=('Consolas', 9),
+            bg='#2b2b2b' if BOOTSTRAP_AVAILABLE else 'white',
+            fg='white' if BOOTSTRAP_AVAILABLE else 'black'
+        )
+        self.txt_tendencias.pack(fill=BOTH, expand=True)
+        self.txt_tendencias.config(state=DISABLED)
+        
+        self.actualizar_tendencias()
+    
+    def crear_pestana_historial(self):
+        """Crea la pestaña de historial"""
+        parent = self.pestana_historial
+        
+        frame_filtros = ttk.Frame(parent)
+        frame_filtros.pack(fill=X, pady=5)
+        
+        ttk.Label(frame_filtros, text="Filtrar por fecha:").pack(side=LEFT, padx=5)
+        
+        ttk.Label(frame_filtros, text="Desde:").pack(side=LEFT, padx=5)
+        self.filtro_fecha_ini = ttk.Entry(frame_filtros, width=15)
+        self.filtro_fecha_ini.pack(side=LEFT, padx=5)
+        self.filtro_fecha_ini.insert(0, datetime.datetime.now().strftime("%Y-%m-%d"))
+        
+        ttk.Label(frame_filtros, text="Hasta:").pack(side=LEFT, padx=5)
+        self.filtro_fecha_fin = ttk.Entry(frame_filtros, width=15)
+        self.filtro_fecha_fin.pack(side=LEFT, padx=5)
+        self.filtro_fecha_fin.insert(0, datetime.datetime.now().strftime("%Y-%m-%d"))
+        
+        ttk.Button(frame_filtros, text="🔍 Filtrar", command=self.filtrar_historial).pack(side=LEFT, padx=5)
+        ttk.Button(frame_filtros, text="📄 Exportar", command=self.exportar_historial_filtrado).pack(side=LEFT, padx=5)
+        
+        frame_historial = ttk.LabelFrame(parent, text="📜 Historial de Copias", padding=10)
+        frame_historial.pack(fill=BOTH, expand=True, pady=5)
+        
+        self.historial_tree = ttk.Treeview(
+            frame_historial,
+            columns=('Fecha', 'Hora', 'Memoria', 'Unidad', 'GB', 'Precio', 'Estado'),
+            show='headings',
+            height=15
+        )
+        
+        self.historial_tree.heading('Fecha', text='Fecha')
+        self.historial_tree.heading('Hora', text='Hora')
+        self.historial_tree.heading('Memoria', text='Memoria')
+        self.historial_tree.heading('Unidad', text='Unidad')
+        self.historial_tree.heading('GB', text='GB')
+        self.historial_tree.heading('Precio', text='Precio')
+        self.historial_tree.heading('Estado', text='Estado')
+        
+        self.historial_tree.column('Fecha', width=100)
+        self.historial_tree.column('Hora', width=80)
+        self.historial_tree.column('Memoria', width=150)
+        self.historial_tree.column('Unidad', width=80)
+        self.historial_tree.column('GB', width=80)
+        self.historial_tree.column('Precio', width=80)
+        self.historial_tree.column('Estado', width=100)
+        
+        scroll_y = ttk.Scrollbar(frame_historial, orient=VERTICAL, command=self.historial_tree.yview)
+        self.historial_tree.configure(yscrollcommand=scroll_y.set)
+        
+        self.historial_tree.pack(side=LEFT, fill=BOTH, expand=True)
+        scroll_y.pack(side=RIGHT, fill=Y)
+    
+    def crear_barra_estado(self):
+        """Crea la barra de estado"""
+        self.status_frame = ttk.Frame(self.root)
+        self.status_frame.pack(side=BOTTOM, fill=X, padx=10, pady=5)
+        
+        self.status_label = ttk.Label(self.status_frame, text="🟢 Sistema listo")
+        self.status_label.pack(side=LEFT)
+        
+        # Información del creador en la barra de estado
+        creador_status = ttk.Label(
+            self.status_frame,
+            text=f"👤 {CREATOR}",
+            font=('Segoe UI', 8),
+            foreground='#7f8c8d' if not BOOTSTRAP_AVAILABLE else None
+        )
+        creador_status.pack(side=LEFT, padx=20)
+        
+        self.precio_label = ttk.Label(
+            self.status_frame,
+            text=f"💰 Precio: ${self.config_manager.obtener_precio():.2f}/GB"
+        )
+        self.precio_label.pack(side=RIGHT)
 
 # ==================== FUNCIÓN PRINCIPAL ====================
 
@@ -2726,6 +3045,10 @@ def main():
     
     if not NOTIFICATION_AVAILABLE:
         print("⚠️ plyer no está instalado. Instala: pip install plyer")
+    
+    if not PYSTRAY_AVAILABLE:
+        print("⚠️ pystray no está instalado. Instala: pip install pystray pillow")
+        print("⚠️ La bandeja del sistema no funcionará correctamente")
     
     # Crear ventana principal
     root = tk.Tk() if not BOOTSTRAP_AVAILABLE else tb.Window()
