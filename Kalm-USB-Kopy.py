@@ -1,6 +1,6 @@
 """
 Kalm-USB-Kopy - Gestor de Memorias USB
-Versión: 3.1.0
+Versión: 3.1.1
 Descripción: Sistema avanzado de gestión de memorias USB con notificaciones Windows
 Creador: Carlos A. Lorenzo Marro
 Email: klorenzo29@nauta.cu
@@ -47,6 +47,27 @@ try:
 except ImportError:
     NOTIFICATION_AVAILABLE = False
     print("plyer no instalado. Instalar: pip install plyer")
+
+# ==================== TEMAS VÁLIDOS DE TTKBOOTSTRAP ====================
+TEMAS_VALIDOS = [
+    'darkly',      # Oscuro con azules (recomendado)
+    'superhero',   # Estilo cómic
+    'cyborg',      # Futurista
+    'vapor',       # Vaporwave
+    'solar',       # Oscuro con solares
+    'flatly',      # Plano moderno
+    'journal',     # Estilo diario
+    'litera',      # Estilo literario
+    'lumen',       # Claro
+    'minty',       # Verde menta
+    'pulse',       # Animado
+    'sandstone',   # Arena
+    'united',      # Unido
+    'yeti',        # Moderno
+    'cosmo',       # Cosmopolita
+    'simplex',     # Simple
+    'cerulean'     # Azul cielo
+]
 
 # ==================== ICONO SVG K MODERNA ====================
 FAVICON_SVG = """<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>
@@ -196,7 +217,7 @@ class WindowsNotifier:
 
 # ==================== CONFIGURACIÓN ====================
 APP_NAME = "Kalm-USB-Kopy"
-APP_VERSION = "3.1.0"
+APP_VERSION = "3.1.1"
 CREATOR = "Carlos A. Lorenzo Marro"
 EMAIL = "klorenzo29@nauta.cu"
 CONFIG_FILE = "config_kalm.json"
@@ -711,6 +732,11 @@ class KalmUSBKopy:
         tema = self.config_manager.obtener("tema", "darkly")
         self.tema_actual = tema
         
+        # Validar que el tema existe
+        if tema not in TEMAS_VALIDOS:
+            tema = "darkly"  # Tema por defecto
+            self.config_manager.establecer("tema", tema)
+        
         if BOOTSTRAP_AVAILABLE:
             try:
                 # Crear nuevo estilo con el tema
@@ -733,8 +759,14 @@ class KalmUSBKopy:
                 
                 return True
             except Exception as e:
-                print(f"Error al aplicar tema: {e}")
-                return False
+                print(f"Error al aplicar tema '{tema}': {e}")
+                # Intentar con tema por defecto
+                try:
+                    self.style = tb.Style(theme="darkly")
+                    self.config_manager.establecer("tema", "darkly")
+                    return True
+                except:
+                    return False
         return False
     
     def on_close(self):
@@ -2004,10 +2036,10 @@ class KalmUSBKopy:
     # ==================== MÉTODOS DE CONFIGURACIÓN ====================
     
     def cambiar_tema(self):
-        """Abre el selector de temas"""
+        """Abre el selector de temas con temas válidos"""
         ventana = tk.Toplevel(self.root)
         ventana.title("Cambiar Tema - Kalm-USB-Kopy")
-        ventana.geometry("500x450")
+        ventana.geometry("550x500")
         ventana.transient(self.root)
         ventana.grab_set()
         
@@ -2019,18 +2051,15 @@ class KalmUSBKopy:
             
             ttk.Label(frame, text="Selecciona un tema:").pack(anchor='w', pady=5)
             
-            temas = ['darkly', 'superhero', 'cyborg', 'vapor', 'solar', 'dark', 'flatly', 
-                     'journal', 'litera', 'lumen', 'minty', 'pulse', 'sandstone', 'united', 'yeti']
-            
             tema_actual = self.config_manager.obtener("tema", "darkly")
             tema_var = tk.StringVar(value=tema_actual)
             
-            # Grid de temas
+            # Grid de temas (usando TEMAS_VALIDOS)
             temas_frame = ttk.Frame(frame)
             temas_frame.pack(fill=BOTH, expand=True, pady=10)
             
             # Mostrar temas en 3 columnas
-            for i, tema in enumerate(temas):
+            for i, tema in enumerate(TEMAS_VALIDOS):
                 row = i // 3
                 col = i % 3
                 
@@ -2046,7 +2075,6 @@ class KalmUSBKopy:
             preview_frame = ttk.LabelFrame(frame, text="Vista Previa del Tema", padding=10)
             preview_frame.pack(fill=X, pady=10)
             
-            # Crear un marco de vista previa que cambiará con el tema
             preview_inner = ttk.Frame(preview_frame)
             preview_inner.pack(fill=X, pady=5)
             
@@ -2058,21 +2086,26 @@ class KalmUSBKopy:
             def actualizar_vista_previa(*args):
                 """Actualiza la vista previa con el tema seleccionado"""
                 nuevo_tema = tema_var.get()
-                try:
-                    # Crear estilo temporal para vista previa
-                    temp_style = tb.Style(theme=nuevo_tema)
-                    # Actualizar los widgets de vista previa
-                    preview_inner.configure(style='TFrame')
-                    lbl_preview.configure(style='TLabel')
-                    btn_preview.configure(style='TButton')
-                    preview_inner.update()
-                except Exception as e:
-                    print(f"Error en vista previa: {e}")
+                if nuevo_tema in TEMAS_VALIDOS:
+                    try:
+                        # Crear estilo temporal para vista previa
+                        temp_style = tb.Style(theme=nuevo_tema)
+                        # Actualizar los widgets de vista previa
+                        preview_inner.configure(style='TFrame')
+                        lbl_preview.configure(style='TLabel')
+                        btn_preview.configure(style='TButton')
+                        preview_inner.update()
+                    except Exception as e:
+                        print(f"Error en vista previa: {e}")
             
             tema_var.trace('w', actualizar_vista_previa)
             
             def aplicar_tema():
                 nuevo_tema = tema_var.get()
+                if nuevo_tema not in TEMAS_VALIDOS:
+                    messagebox.showerror("Error", f"El tema '{nuevo_tema}' no es válido")
+                    return
+                
                 self.config_manager.establecer("tema", nuevo_tema)
                 
                 # Aplicar tema sin reiniciar
