@@ -1,7 +1,7 @@
 # ⚔️ Kalm-USB-Kopy
 
 <div align="center">
-  <img src="https://raw.githubusercontent.com/klorenzo29/Kalm-USB-Kopy/kalm_icon.png](https://github.com/calm291094-del/Kalm-USB-Kopy/blob/main/kalm_icon.png" alt="Kalm-USB-Kopy Logo" width="200">
+  <img src="https://github.com/calm291094-del/Kalm-USB-Kopy/blob/main/kalm_icon.png" alt="Kalm-USB-Kopy Logo" width="200">
   <br>
   <strong>Sistema Avanzado de Gestión de Memorias USB</strong>
   <br>
